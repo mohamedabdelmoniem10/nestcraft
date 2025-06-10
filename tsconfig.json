@@ -1,0 +1,44 @@
+{
+  "compileOnSave": false,
+  "compilerOptions": {
+    "rootDir": ".",
+    "sourceMap": true,
+    "declaration": false,
+    "moduleResolution": "node",
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "importHelpers": true,
+    "target": "ES2020",
+    "module": "esnext",
+    "lib": ["ES2020", "dom"],
+    "skipLibCheck": true,
+    "skipDefaultLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@nestcraft/shared": ["libs/shared/src/index.ts"],
+      "@nestcraft/shared/*": ["libs/shared/src/*"]
+    },
+    "strict": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "noFallthroughCasesInSwitch": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "preserve",
+    "incremental": true
+  },
+  "exclude": ["node_modules", "tmp"],
+  "references": [
+    {
+      "path": "./apps/backend"
+    },
+    {
+      "path": "./apps/frontend"
+    },
+    {
+      "path": "./libs/shared"
+    }
+  ]
+}

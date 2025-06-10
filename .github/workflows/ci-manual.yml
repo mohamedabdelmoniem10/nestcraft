@@ -1,0 +1,52 @@
+name: 🔄 Manual CI (Testing Only)
+
+on:
+  workflow_dispatch: # Manual trigger only via GitHub UI
+    inputs:
+      run_tests:
+        description: "Run tests"
+        required: false
+        default: "true"
+        type: boolean
+      run_security:
+        description: "Run security scan"
+        required: false
+        default: "false"
+        type: boolean
+
+jobs:
+  test:
+    name: 🧪 Test Suite
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.run_tests == 'true' }}
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: "npm"
+
+      - name: 📥 Install dependencies
+        run: npm ci
+
+      - name: 🏗️ Build shared library
+        run: npx nx build shared
+
+      - name: 🧪 Run tests
+        run: npx nx run-many --target=test --all
+
+  security:
+    name: 🔒 Security Scan
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.run_security == 'true' }}
+
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🔍 Run security audit
+        run: npm audit --audit-level=high

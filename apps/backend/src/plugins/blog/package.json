@@ -1,0 +1,27 @@
+{
+  "name": "blog",
+  "version": "1.0.0",
+  "description": "Blog management plugin with posts, categories, and tags",
+  "author": "NestCraft Team",
+  "main": "index.ts",
+  "nestcraft": {
+    "type": "plugin",
+    "hooks": ["onLoad", "onActivate", "onDeactivate", "onConfig"],
+    "routes": [
+      "/api/v1/blog/posts",
+      "/api/v1/blog/categories", 
+      "/api/v1/blog/tags"
+    ],
+    "permissions": [
+      "blog.read",
+      "blog.write", 
+      "blog.admin"
+    ],
+    "dependencies": [],
+    "config": {
+      "postsPerPage": 10,
+      "allowComments": true,
+      "moderateComments": false
+    }
+  }
+} 

@@ -1,0 +1,324 @@
+name: 🔄 Continuous Integration
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "18.x"
+  PNPM_VERSION: "8.x"
+
+jobs:
+  # Code Quality & Security Checks
+  quality:
+    name: 🔍 Code Quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 📦 Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🏗️ Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: 📥 Install Dependencies
+        run: npm ci
+
+      - name: 🔍 Lint Code
+        run: npm run lint
+
+      - name: 🎨 Check Code Formatting
+        run: npm run format:check
+
+      - name: 🔒 Security Audit
+        run: npm audit --audit-level=moderate
+
+      - name: 📊 Dependency Graph
+        run: npm run dep-graph
+
+  # Unit & Integration Tests
+  test:
+    name: 🧪 Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      matrix:
+        test-type: [unit, integration, e2e]
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_password
+          POSTGRES_DB: test_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 3s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+      mongodb:
+        image: mongo:7-jammy
+        env:
+          MONGO_INITDB_ROOT_USERNAME: test_user
+          MONGO_INITDB_ROOT_PASSWORD: test_password
+        options: >-
+          --health-cmd "mongosh --eval 'db.adminCommand(\"ping\")'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 27017:27017
+
+    steps:
+      - name: 📦 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🏗️ Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: 📥 Install Dependencies
+        run: npm ci
+
+      - name: 🏗️ Build Applications
+        run: npm run build:all
+
+      - name: 🧪 Run Tests
+        run: |
+          case "${{ matrix.test-type }}" in
+            unit)
+              npm run test -- --testPathPattern="\.spec\.ts$" --coverage
+              ;;
+            integration)
+              npm run test -- --testPathPattern="\.integration\.spec\.ts$"
+              ;;
+            e2e)
+              npm run test -- --testPathPattern="\.e2e-spec\.ts$"
+              ;;
+          esac
+        env:
+          NODE_ENV: test
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USERNAME: test_user
+          DB_PASSWORD: test_password
+          DB_DATABASE: test_db
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+          MONGO_HOST: localhost
+          MONGO_PORT: 27017
+          MONGO_USERNAME: test_user
+          MONGO_PASSWORD: test_password
+
+      - name: 📊 Upload Coverage Reports
+        if: matrix.test-type == 'unit'
+        uses: codecov/codecov-action@v3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage/lcov.info
+          fail_ci_if_error: false
+
+  # Build & Docker Tests
+  build:
+    name: 🏗️ Build & Docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [quality, test]
+
+    steps:
+      - name: 📦 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🏗️ Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: 📥 Install Dependencies
+        run: npm ci
+
+      - name: 🏗️ Build All Applications
+        run: npm run build:all
+
+      - name: 🐳 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🐳 Build Docker Images
+        run: |
+          docker build -f infra/docker/backend.Dockerfile -t nestcraft-backend:test .
+          docker build -f infra/docker/frontend.Dockerfile -t nestcraft-frontend:test .
+
+      - name: 🔍 Test Docker Images
+        run: |
+          # Test backend container
+          docker run --rm -d --name test-backend \
+            -p 4000:4000 \
+            -e NODE_ENV=test \
+            nestcraft-backend:test
+
+          # Wait for container to start
+          sleep 10
+
+          # Test health endpoint
+          curl -f http://localhost:4000/api/v1/health || exit 1
+
+          # Cleanup
+          docker stop test-backend
+
+      - name: 📊 Analyze Image Sizes
+        run: |
+          echo "## Docker Image Sizes" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | Size |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|------|" >> $GITHUB_STEP_SUMMARY
+          docker images --format "table {{.Repository}}:{{.Tag}}\t{{.Size}}" | grep nestcraft | while read line; do
+            echo "| $line |" | sed 's/\t/ | /g' >> $GITHUB_STEP_SUMMARY
+          done
+
+  # Performance & Load Testing
+  performance:
+    name: ⚡ Performance Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [build]
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: 📦 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🏗️ Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+
+      - name: 📥 Install Dependencies
+        run: npm ci
+
+      - name: 🚀 Start Test Environment
+        run: |
+          npm run docker:up
+          sleep 30  # Wait for services to be ready
+
+      - name: ⚡ Run Performance Tests
+        run: |
+          # Install k6 for load testing
+          curl https://github.com/grafana/k6/releases/download/v0.46.0/k6-v0.46.0-linux-amd64.tar.gz -L | tar xvz --strip-components 1
+
+          # Create basic load test
+          cat > load-test.js << 'EOF'
+          import http from 'k6/http';
+          import { check } from 'k6';
+
+          export let options = {
+            stages: [
+              { duration: '30s', target: 10 },
+              { duration: '1m', target: 20 },
+              { duration: '30s', target: 0 },
+            ],
+          };
+
+          export default function() {
+            let response = http.get('http://localhost:4000/api/v1/health');
+            check(response, {
+              'status is 200': (r) => r.status === 200,
+              'response time < 500ms': (r) => r.timings.duration < 500,
+            });
+          }
+          EOF
+
+          # Run load test
+          ./k6 run load-test.js
+
+      - name: 🧹 Cleanup
+        if: always()
+        run: npm run docker:down
+
+  # Security Scanning
+  security:
+    name: 🔒 Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [quality]
+
+    steps:
+      - name: 📦 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🔍 Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          format: "sarif"
+          output: "trivy-results.sarif"
+
+      - name: 📊 Upload Trivy Scan Results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: "trivy-results.sarif"
+
+  # Notify Results
+  notify:
+    name: 📢 Notify Results
+    runs-on: ubuntu-latest
+    needs: [quality, test, build, security]
+    if: always()
+
+    steps:
+      - name: 📊 Determine Overall Status
+        id: status
+        run: |
+          if [[ "${{ needs.quality.result }}" == "success" && \
+                "${{ needs.test.result }}" == "success" && \
+                "${{ needs.build.result }}" == "success" && \
+                "${{ needs.security.result }}" == "success" ]]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "emoji=✅" >> $GITHUB_OUTPUT
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "emoji=❌" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 📝 Create Summary
+        run: |
+          echo "## ${{ steps.status.outputs.emoji }} CI Pipeline Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Code Quality | ${{ needs.quality.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tests | ${{ needs.test.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build | ${{ needs.build.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Security | ${{ needs.security.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Overall Status:** ${{ steps.status.outputs.status }}" >> $GITHUB_STEP_SUMMARY

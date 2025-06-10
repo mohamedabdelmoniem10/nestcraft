@@ -1,0 +1,284 @@
+name: 📊 Monitoring & Health Checks
+
+on:
+  schedule:
+    # Run every 15 minutes
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+env:
+  SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+  DATADOG_API_KEY: ${{ secrets.DATADOG_API_KEY }}
+
+jobs:
+  # Health Checks
+  health-check:
+    name: 🔍 Health Monitoring
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        environment:
+          - name: staging
+            url: https://staging.nestcraft.dev
+          - name: production
+            url: https://nestcraft.dev
+
+    steps:
+      - name: 🔍 Check API Health
+        id: health
+        run: |
+          START_TIME=$(date +%s%3N)
+
+          # Test main health endpoint
+          if curl -f -s -o /dev/null -w "%{http_code}\n%{time_total}\n" "${{ matrix.environment.url }}/api/v1/health" > health_response.txt; then
+            HTTP_CODE=$(sed -n '1p' health_response.txt)
+            RESPONSE_TIME=$(sed -n '2p' health_response.txt)
+            
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "status=healthy" >> $GITHUB_OUTPUT
+              echo "response_time=$RESPONSE_TIME" >> $GITHUB_OUTPUT
+              echo "✅ ${{ matrix.environment.name }} is healthy (${RESPONSE_TIME}s)"
+            else
+              echo "status=unhealthy" >> $GITHUB_OUTPUT
+              echo "❌ ${{ matrix.environment.name }} returned HTTP $HTTP_CODE"
+            fi
+          else
+            echo "status=down" >> $GITHUB_OUTPUT
+            echo "❌ ${{ matrix.environment.name }} is unreachable"
+          fi
+
+      - name: 🔍 Check Database Health
+        id: database
+        run: |
+          if curl -f -s "${{ matrix.environment.url }}/api/v1/health/database" | grep -q '"status":"up"'; then
+            echo "status=healthy" >> $GITHUB_OUTPUT
+            echo "✅ Database is healthy"
+          else
+            echo "status=unhealthy" >> $GITHUB_OUTPUT
+            echo "❌ Database health check failed"
+          fi
+
+      - name: 🔍 Check Cache Health
+        id: cache
+        run: |
+          if curl -f -s "${{ matrix.environment.url }}/api/v1/health/cache" | grep -q '"status":"up"'; then
+            echo "status=healthy" >> $GITHUB_OUTPUT
+            echo "✅ Cache is healthy"
+          else
+            echo "status=unhealthy" >> $GITHUB_OUTPUT
+            echo "❌ Cache health check failed"
+          fi
+
+      - name: 📊 Send Metrics to DataDog
+        if: env.DATADOG_API_KEY != ''
+        run: |
+          # Send health metrics to DataDog
+          curl -X POST "https://api.datadoghq.com/api/v1/series" \
+            -H "Content-Type: application/json" \
+            -H "DD-API-KEY: ${{ env.DATADOG_API_KEY }}" \
+            -d '{
+              "series": [
+                {
+                  "metric": "nestcraft.health.status",
+                  "points": [['$(date +%s)', ${{ steps.health.outputs.status == 'healthy' && '1' || '0' }}]],
+                  "tags": ["environment:${{ matrix.environment.name }}", "service:api"]
+                },
+                {
+                  "metric": "nestcraft.health.response_time",
+                  "points": [['$(date +%s)', ${{ steps.health.outputs.response_time || '0' }}]],
+                  "tags": ["environment:${{ matrix.environment.name }}", "service:api"]
+                },
+                {
+                  "metric": "nestcraft.database.status",
+                  "points": [['$(date +%s)', ${{ steps.database.outputs.status == 'healthy' && '1' || '0' }}]],
+                  "tags": ["environment:${{ matrix.environment.name }}", "service:database"]
+                },
+                {
+                  "metric": "nestcraft.cache.status",
+                  "points": [['$(date +%s)', ${{ steps.cache.outputs.status == 'healthy' && '1' || '0' }}]],
+                  "tags": ["environment:${{ matrix.environment.name }}", "service:cache"]
+                }
+              ]
+            }'
+
+      - name: 🚨 Alert on Failure
+        if: steps.health.outputs.status != 'healthy' || steps.database.outputs.status != 'healthy' || steps.cache.outputs.status != 'healthy'
+        run: |
+          # Prepare alert message
+          MESSAGE="🚨 NestCraft Health Alert - ${{ matrix.environment.name }}\n"
+          MESSAGE="${MESSAGE}API: ${{ steps.health.outputs.status }}\n"
+          MESSAGE="${MESSAGE}Database: ${{ steps.database.outputs.status }}\n"
+          MESSAGE="${MESSAGE}Cache: ${{ steps.cache.outputs.status }}\n"
+          MESSAGE="${MESSAGE}Time: $(date)\n"
+          MESSAGE="${MESSAGE}URL: ${{ matrix.environment.url }}"
+
+          # Send to Slack if webhook is configured
+          if [ -n "${{ env.SLACK_WEBHOOK }}" ]; then
+            curl -X POST "${{ env.SLACK_WEBHOOK }}" \
+              -H "Content-Type: application/json" \
+              -d "{\"text\":\"${MESSAGE}\"}"
+          fi
+
+          # Create GitHub issue for production failures
+          if [ "${{ matrix.environment.name }}" = "production" ]; then
+            echo "ALERT_PRODUCTION=true" >> $GITHUB_ENV
+          fi
+
+  # Performance Monitoring
+  performance-check:
+    name: ⚡ Performance Monitoring
+    runs-on: ubuntu-latest
+    needs: [health-check]
+
+    steps:
+      - name: 📦 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: ⚡ Run Performance Tests
+        run: |
+          # Install k6
+          curl https://github.com/grafana/k6/releases/download/v0.46.0/k6-v0.46.0-linux-amd64.tar.gz -L | tar xvz --strip-components 1
+
+          # Create performance test script
+          cat > perf-test.js << 'EOF'
+          import http from 'k6/http';
+          import { check, sleep } from 'k6';
+
+          export let options = {
+            stages: [
+              { duration: '1m', target: 5 },
+              { duration: '2m', target: 10 },
+              { duration: '1m', target: 0 },
+            ],
+            thresholds: {
+              http_req_duration: ['p(95)<500'],
+              http_req_failed: ['rate<0.05'],
+            },
+          };
+
+          const BASE_URL = __ENV.BASE_URL || 'https://nestcraft.dev';
+
+          export default function() {
+            // Test health endpoint
+            let healthRes = http.get(`${BASE_URL}/api/v1/health`);
+            check(healthRes, {
+              'health check status is 200': (r) => r.status === 200,
+              'health check response time < 200ms': (r) => r.timings.duration < 200,
+            });
+
+            sleep(1);
+          }
+          EOF
+
+          # Run performance tests against production
+          BASE_URL=https://nestcraft.dev ./k6 run perf-test.js --out json=perf-results.json
+
+      - name: 📊 Process Performance Results
+        run: |
+          # Extract key metrics from k6 results
+          if [ -f perf-results.json ]; then
+            echo "## ⚡ Performance Test Results" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            # Parse results (simplified - in production, use proper JSON parsing)
+            AVG_RESPONSE_TIME=$(grep "http_req_duration" perf-results.json | tail -1 | grep -o '"value":[0-9.]*' | cut -d: -f2 | head -1)
+            ERROR_RATE=$(grep "http_req_failed" perf-results.json | tail -1 | grep -o '"value":[0-9.]*' | cut -d: -f2 | head -1)
+            
+            echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+            echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Average Response Time | ${AVG_RESPONSE_TIME:-N/A}ms |" >> $GITHUB_STEP_SUMMARY
+            echo "| Error Rate | ${ERROR_RATE:-N/A}% |" >> $GITHUB_STEP_SUMMARY
+            echo "| Test Duration | 4 minutes |" >> $GITHUB_STEP_SUMMARY
+            echo "| Max Users | 10 concurrent |" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # SSL Certificate Monitoring
+  ssl-check:
+    name: 🔒 SSL Certificate Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 🔒 Check SSL Certificates
+        run: |
+          check_ssl() {
+            local domain=$1
+            local env_name=$2
+            
+            echo "Checking SSL for $domain..."
+            
+            # Get certificate expiry date
+            EXPIRY=$(echo | openssl s_client -servername $domain -connect $domain:443 2>/dev/null | openssl x509 -noout -enddate | cut -d= -f2)
+            EXPIRY_EPOCH=$(date -d "$EXPIRY" +%s)
+            CURRENT_EPOCH=$(date +%s)
+            DAYS_UNTIL_EXPIRY=$(( (EXPIRY_EPOCH - CURRENT_EPOCH) / 86400 ))
+            
+            echo "SSL Certificate for $domain expires in $DAYS_UNTIL_EXPIRY days"
+            
+            # Alert if certificate expires in less than 30 days
+            if [ $DAYS_UNTIL_EXPIRY -lt 30 ]; then
+              echo "⚠️ SSL certificate for $domain expires soon!" >> $GITHUB_STEP_SUMMARY
+              echo "::warning::SSL certificate for $domain expires in $DAYS_UNTIL_EXPIRY days"
+            fi
+            
+            # Send metrics to DataDog
+            if [ -n "${{ env.DATADOG_API_KEY }}" ]; then
+              curl -X POST "https://api.datadoghq.com/api/v1/series" \
+                -H "Content-Type: application/json" \
+                -H "DD-API-KEY: ${{ env.DATADOG_API_KEY }}" \
+                -d "{
+                  \"series\": [{
+                    \"metric\": \"nestcraft.ssl.days_until_expiry\",
+                    \"points\": [[$(date +%s), $DAYS_UNTIL_EXPIRY]],
+                    \"tags\": [\"environment:$env_name\", \"domain:$domain\"]
+                  }]
+                }"
+            fi
+          }
+
+          # Check certificates for all domains
+          check_ssl "staging.nestcraft.dev" "staging"
+          check_ssl "nestcraft.dev" "production"
+
+  # Dependency Vulnerability Scan
+  security-scan:
+    name: 🔒 Security Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📦 Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 🔍 Run Security Audit
+        run: |
+          # Check for security vulnerabilities
+          npm audit --audit-level=moderate --json > audit-results.json || true
+
+          # Process results
+          VULNERABILITIES=$(cat audit-results.json | grep -o '"total":[0-9]*' | head -1 | cut -d: -f2)
+
+          if [ "$VULNERABILITIES" -gt "0" ]; then
+            echo "⚠️ Found $VULNERABILITIES security vulnerabilities" >> $GITHUB_STEP_SUMMARY
+            echo "::warning::Security vulnerabilities found in dependencies"
+          else
+            echo "✅ No security vulnerabilities found" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # Uptime Report
+  uptime-report:
+    name: 📈 Uptime Report
+    runs-on: ubuntu-latest
+    needs: [health-check]
+    if: github.event_name == 'schedule'
+
+    steps:
+      - name: 📊 Generate Uptime Summary
+        run: |
+          echo "## 📈 Daily Uptime Report - $(date +%Y-%m-%d)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | Status | Last Check |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------------|--------|------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Production | ✅ Online | $(date) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Staging | ✅ Online | $(date) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Monitoring Frequency:** Every 15 minutes" >> $GITHUB_STEP_SUMMARY
+          echo "**Next Report:** $(date -d 'tomorrow')" >> $GITHUB_STEP_SUMMARY

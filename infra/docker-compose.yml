@@ -1,0 +1,247 @@
+version: "3.8"
+
+services:
+  # NestCraft Backend Service
+  backend:
+    build:
+      context: ..
+      dockerfile: infra/docker/backend.Dockerfile
+      target: runner
+    ports:
+      - "4000:4000"
+    environment:
+      - NODE_ENV=development
+      - PORT=4000
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USERNAME=nestcraft
+      - DB_PASSWORD=nestcraft_dev_password
+      - DB_DATABASE=nestcraft_dev
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - JWT_SECRET=nestcraft_dev_jwt_secret_2024
+      - API_PREFIX=api/v1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../uploads:/app/uploads
+      - ../logs:/app/logs
+    networks:
+      - nestcraft-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # NestCraft Frontend Service
+  frontend:
+    build:
+      context: ..
+      dockerfile: infra/docker/frontend.Dockerfile
+      target: runner
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - NEXT_PUBLIC_API_URL=http://localhost:4000/api/v1
+      - NEXT_PUBLIC_APP_NAME=NestCraft
+      - NEXT_TELEMETRY_DISABLED=1
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - nestcraft-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=nestcraft
+      - POSTGRES_PASSWORD=nestcraft_dev_password
+      - POSTGRES_DB=nestcraft_dev
+      - POSTGRES_INITDB_ARGS=--encoding=UTF-8 --lc-collate=C --lc-ctype=C
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../database/init:/docker-entrypoint-initdb.d
+    networks:
+      - nestcraft-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nestcraft -d nestcraft_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - nestcraft-network
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass nestcraft_redis_password
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # pgAdmin (Development Database Management)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@nestcraft.dev
+      - PGADMIN_DEFAULT_PASSWORD=nestcraft_admin_2024
+      - PGADMIN_CONFIG_SERVER_MODE=False
+    ports:
+      - "8080:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - nestcraft-network
+    restart: unless-stopped
+
+  # Redis Commander (Development Redis Management)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    environment:
+      - REDIS_HOSTS=local:redis:6379:0:nestcraft_redis_password
+      - HTTP_USER=admin
+      - HTTP_PASSWORD=nestcraft_redis_admin
+    ports:
+      - "8081:8081"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - nestcraft-network
+    restart: unless-stopped
+
+  # Nginx Reverse Proxy (Development)
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.dev.conf:/etc/nginx/nginx.conf
+      - ./nginx/ssl:/etc/nginx/ssl
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - nestcraft-network
+    restart: unless-stopped
+
+  # MongoDB (Audit Logs & Analytics)
+  mongodb:
+    image: mongo:7-jammy
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=nestcraft
+      - MONGO_INITDB_ROOT_PASSWORD=nestcraft_mongo_password
+      - MONGO_INITDB_DATABASE=nestcraft_audit
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - ./mongodb/init:/docker-entrypoint-initdb.d
+    networks:
+      - nestcraft-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Mongo Express (Development MongoDB Management)
+  mongo-express:
+    image: mongo-express:latest
+    environment:
+      - ME_CONFIG_MONGODB_ADMINUSERNAME=nestcraft
+      - ME_CONFIG_MONGODB_ADMINPASSWORD=nestcraft_mongo_password
+      - ME_CONFIG_MONGODB_URL=mongodb://nestcraft:nestcraft_mongo_password@mongodb:27017/
+      - ME_CONFIG_BASICAUTH_USERNAME=admin
+      - ME_CONFIG_BASICAUTH_PASSWORD=nestcraft_mongo_admin
+    ports:
+      - "8082:8081"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - nestcraft-network
+    restart: unless-stopped
+
+  # DataDog Agent (Monitoring & APM)
+  datadog-agent:
+    image: gcr.io/datadoghq/agent:7
+    environment:
+      - DD_API_KEY=${DATADOG_API_KEY}
+      - DD_SITE=datadoghq.com
+      - DD_HOSTNAME=nestcraft-dev
+      - DD_ENV=development
+      - DD_SERVICE=nestcraft
+      - DD_VERSION=1.0.0
+      - DD_APM_ENABLED=true
+      - DD_APM_NON_LOCAL_TRAFFIC=true
+      - DD_PROCESS_AGENT_ENABLED=true
+      - DD_LOGS_ENABLED=true
+      - DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL=true
+      - DD_DOGSTATSD_NON_LOCAL_TRAFFIC=true
+      - DD_CONTAINER_EXCLUDE="name:datadog-agent"
+    ports:
+      - "8126:8126" # APM
+      - "8125:8125/udp" # StatsD
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc/:/host/proc/:ro
+      - /opt/datadog-agent/run:/opt/datadog-agent/run:rw
+      - /sys/fs/cgroup/:/host/sys/fs/cgroup:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    networks:
+      - nestcraft-network
+    restart: unless-stopped
+    profiles:
+      - monitoring
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  mongodb_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+networks:
+  nestcraft-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
