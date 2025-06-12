@@ -1,7 +1,4 @@
-const { getJestProjects } = require("@nx/jest");
-
 module.exports = {
-  projects: getJestProjects(),
   coverageReporters: ["html", "lcov", "text-summary"],
   collectCoverageFrom: [
     "apps/**/*.{ts,tsx}",

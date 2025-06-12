@@ -1,13 +1,20 @@
 /* eslint-disable */
 export default {
-  displayName: 'frontend',
   preset: '../../jest.preset.js',
+  displayName: 'landing',
+  testEnvironment: 'jsdom',
   transform: {
-    '^(?!.*\\.(js|jsx|ts|tsx|css|json)$)': '@nx/react/plugins/jest',
-    '^.+\\.[tj]sx?$': ['babel-jest', { presets: ['@nx/react/babel'] }],
+    '^.+\\.[tj]sx?$': [
+      'babel-jest',
+      {
+        presets: [
+          '@babel/preset-env',
+          '@babel/preset-react',
+          '@babel/preset-typescript',
+        ],
+      },
+    ],
   },
   moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx'],
-  coverageDirectory: '../../coverage/apps/frontend',
-  setupFilesAfterEnv: ['<rootDir>/src/test-setup.ts'],
-  testEnvironment: 'jsdom',
+  coverageDirectory: '../../coverage/apps/landing',
 };

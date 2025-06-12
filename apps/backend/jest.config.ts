@@ -4,6 +4,7 @@ export default {
   preset: '../../jest.preset.js',
   globals: {},
   testEnvironment: 'node',
+  setupFilesAfterEnv: ['<rootDir>/src/test-setup.ts'],
   transform: {
     '^.+\\.[tj]s$': [
       'ts-jest',
@@ -16,6 +17,6 @@ export default {
   coverageDirectory: '../../coverage/apps/backend',
   testMatch: [
     '<rootDir>/src/**/__tests__/**/*.[jt]s?(x)',
-    '<rootDir>/src/**/*(*.)@(spec|test).[jt]s?(x)',
+    '<rootDir>/src/**/*(*.)@(spec|test|e2e-spec).[jt]s?(x)',
   ],
 };

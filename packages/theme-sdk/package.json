@@ -1,0 +1,40 @@
+{
+  "name": "@nestcraft/theme-sdk",
+  "version": "1.0.0",
+  "description": "NestCraft Theme Development Kit",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "create-theme": "node dist/cli/create-theme.js",
+    "validate-theme": "node dist/cli/validate-theme.js",
+    "publish-theme": "node dist/cli/publish-theme.js"
+  },
+  "bin": {
+    "nestcraft-theme": "dist/cli/index.js"
+  },
+  "dependencies": {
+    "chalk": "^5.0.0",
+    "inquirer": "^9.0.0",
+    "next": "^14.0.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "typescript": "^5.8.3",
+    "zod": "^3.25.57"
+  },
+  "devDependencies": {
+    "@types/inquirer": "^9.0.0",
+    "@types/node": "^20.19.0",
+    "@types/react": "^18.0.0"
+  },
+  "keywords": [
+    "nestcraft",
+    "theme",
+    "sdk",
+    "development",
+    "next.js"
+  ],
+  "author": "",
+  "license": "ISC"
+}

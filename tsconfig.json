@@ -35,7 +35,10 @@
       "path": "./apps/backend"
     },
     {
-      "path": "./apps/frontend"
+      "path": "./apps/dashboard"
+    },
+    {
+      "path": "./apps/landing"
     },
     {
       "path": "./libs/shared"
